@@ -1,0 +1,11 @@
+version: "3.2"
+services:
+  mongoDB:
+    container_name: mongo-db-test
+    image: mongo:4.4.6
+    command: [ "--bind_ip_all", "--port", "27017" ]
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=testUser
+      - MONGO_INITDB_ROOT_PASSWORD=pass123
+    ports:
+      - "27017:27017"

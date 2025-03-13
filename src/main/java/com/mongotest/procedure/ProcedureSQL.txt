@@ -1,0 +1,170 @@
+CREATE OR REPLACE PROCEDURE "PROC_PRE_AUTO_RCPT" AS
+vPYMT_NO VARCHAR(20);
+vMATCH_DOC VARCHAR(25);
+vPOL_NO VARCHAR(25);
+dMAST_MATCH_ADV_AMT DECIMAL(18,2);
+dDET_MATCH_ADV_AMT DECIMAL(18,2);
+dTOTAL_MATCH_ADV_AMT DECIMAL(18,2);
+vPRODUCT_TYPE VARCHAR(10);
+vMATCH_TYPE VARCHAR(10);
+vADV_MATCH_DOC VARCHAR(25);
+vADV_MATCH_TYPE VARCHAR(10);
+vPROCESS_NAME VARCHAR(20) DEFAULT 'PROC_PRE_AUTO_RCPT';
+vDEBUG VARCHAR(200) DEFAULT '0';
+bNOT_FOUND SMALLINT DEFAULT 0;
+SQLCODE INTEGER DEFAULT 0;
+vERROR_CODE VARCHAR(50);
+vERROR_MESSAGE VARCHAR(500);
+vFAILED_REMARKS VARCHAR(500);
+OTHER_KINDS_OF_ERR EXCEPTION;
+vSQLERR VARCHAR2(200);
+
+CURSOR cADV_PYMT IS
+    SELECT PYMT_NO,MATCH_ADV_AMT
+    FROM ACRC_PYMT_UPLOAD
+    WHERE MATCH_ADV_AMT > 0 AND (DEL_IND <> 'Y' OR DEL_IND IS NULL);
+
+CURSOR cPYMT_MATCH IS
+    SELECT PYMT.MATCH_DOC,PYMT.MATCH_TYPE,PYMT.MATCH_ADV_AMT
+    FROM ACRC_PYMT_MATCH PYMT
+    WHERE PYMT.PYMT_NO = vPYMT_NO AND PYMT.MATCH_ADV_AMT > 0;
+
+BEGIN
+    OPEN cADV_PYMT;
+    <<PYMT_ADV_LOOP>>
+    LOOP
+        FETCH cADV_PYMT INTO vPYMT_NO,dMAST_MATCH_ADV_AMT;
+        EXIT WHEN cADV_PYMT%NOTFOUND;
+        BEGIN
+            vFAILED_REMARKS := NULL;
+            BEGIN
+                SELECT SUM(MATCH_ADV_AMT)
+                INTO dTOTAL_MATCH_ADV_AMT
+                FROM ACRC_PYMT_MATCH
+                WHERE PYMT_NO = vPYMT_NO;
+                EXCEPTION
+                    WHEN NO_DATA_FOUND THEN
+                        dTOTAL_MATCH_ADV_AMT := NULL;
+            END;
+            IF ( dMAST_MATCH_ADV_AMT <> dTOTAL_MATCH_ADV_AMT ) THEN
+                vFAILED_REMARKS := 'Advance match amount not tally for payment no : '||vPYMT_NO;
+                GOTO FAILED_PREAUTORCPT;
+            END IF;
+            OPEN cPYMT_MATCH;
+            <<PYMT_MATCH_LOOP>>
+            LOOP
+                FETCH cPYMT_MATCH INTO vADV_MATCH_DOC,vADV_MATCH_TYPE,dDET_MATCH_ADV_AMT;
+                EXIT WHEN cPYMT_MATCH%NOTFOUND;
+                vMATCH_DOC := NULL;
+                vPOL_NO := NULL;
+                bNOT_FOUND := 0;
+                BEGIN
+                    SELECT DOC.MATCH_DOC,DOC.POL_NO
+                    INTO vMATCH_DOC,vPOL_NO
+                    FROM VIEW_ACRC_MATCHDOC DOC
+                    WHERE DOC.MATCH_TYPE = vADV_MATCH_TYPE
+                    AND DOC.MATCH_DOC = vADV_MATCH_DOC;
+                    EXCEPTION
+                        WHEN NO_DATA_FOUND THEN
+                            GOTO SKIP_UPDATE;
+                END;
+                IF(vMATCH_DOC IS NOT NULL AND vPOL_NO IS NOT NULL ) THEN
+                    BEGIN
+                        SELECT MATCH_TYPE, PROD_TYPE
+                        INTO vMATCH_TYPE, vPRODUCT_TYPE
+                        FROM VIEW_ACRC_MATCHDOC
+                        WHERE MATCH_DOC = vPOL_NO
+                        AND MATCH_TYPE IN ('PL','EN');
+                        EXCEPTION
+                            WHEN NO_DATA_FOUND THEN
+                                bNOT_FOUND := 1;
+                    END;
+                    IF bNOT_FOUND = 1 THEN
+                        GOTO SKIP_UPDATE;
+                    END IF;
+                    bNOT_FOUND := 0;
+                    BEGIN
+                        UPDATE ACRC_PYMT_MATCH
+                        SET MATCH_AMT = MATCH_AMT + dDET_MATCH_ADV_AMT,
+                            MATCH_ADV_AMT = MATCH_ADV_AMT - dDET_MATCH_ADV_AMT,
+                            MATCH_TYPE = vMATCH_TYPE,
+                            PROD_TYPE = vPRODUCT_TYPE,
+                            MATCH_DOC = vPOL_NO
+                        WHERE PYMT_NO = vPYMT_NO
+                        AND MATCH_DOC = vMATCH_DOC;
+                        EXCEPTION
+                            WHEN OTHERS THEN
+                                vERROR_CODE := TO_CHAR(SQLCODE);
+                                vSQLERR := SUBSTR(SQLERRM,1,200);
+                                RAISE OTHER_KINDS_OF_ERR;
+                    END;
+                    BEGIN
+                        UPDATE ACRC_PYMT_UPLOAD
+                        SET MATCH_AMT = MATCH_AMT + dDET_MATCH_ADV_AMT,
+                            MATCH_ADV_AMT = MATCH_ADV_AMT - dDET_MATCH_ADV_AMT
+                        WHERE PYMT_NO = vPYMT_NO;
+                        EXCEPTION
+                            WHEN OTHERS THEN
+                                vERROR_CODE := TO_CHAR(SQLCODE);
+                                vSQLERR := SUBSTR(SQLERRM,1,200);
+                                RAISE OTHER_KINDS_OF_ERR;
+                    END;
+                END IF;
+                <<SKIP_UPDATE>>
+                bNOT_FOUND := 0;
+            END LOOP;
+            CLOSE cPYMT_MATCH;
+            <<FAILED_PREAUTORCPT>>
+            IF vFAILED_REMARKS IS NOT NULL THEN
+                BEGIN
+                    INSERT INTO SAPS_LOG (PROCESS_NAME,LOG_TIME,LOG_TYPE,LOG_DESCP,LOG_CODE)
+                    VALUES ('PROC_PRE_AUTO_RCPT',CURRENT_TIMESTAMP,'E',vFAILED_REMARKS,'');
+                END;
+            END IF;
+        EXCEPTION
+            WHEN OTHER_KINDS_OF_ERR THEN
+                BEGIN
+                    vERROR_MESSAGE := 'SQLERR:: ' || vSQLERR || ';DEBUG==' || vDEBUG || ';PYMT_NO==' || vPYMT_NO;
+                    PROC_GEN_ACC_LOG(vPYMT_NO,vPROCESS_NAME,vERROR_MESSAGE,'E',vERROR_CODE);
+                END;
+                IF (cPYMT_MATCH%ISOPEN) THEN
+                    CLOSE cPYMT_MATCH;
+                END IF;
+                CONTINUE;
+            WHEN OTHERS THEN
+                BEGIN
+                    vERROR_CODE := TO_CHAR(SQLCODE);
+                    vSQLERR := SUBSTR(SQLERRM,1,200);
+                    vERROR_MESSAGE := 'SQLERR:: ' || vSQLERR || ';DEBUG==' || vDEBUG || ';PYMT_NO==' || vPYMT_NO;
+                    PROC_GEN_ACC_LOG(vPYMT_NO,vPROCESS_NAME,vERROR_MESSAGE,'E',vERROR_CODE);
+                END;
+                IF (cPYMT_MATCH%ISOPEN) THEN
+                    CLOSE cPYMT_MATCH;
+                END IF;
+                CONTINUE;
+        END;
+    END LOOP;
+    CLOSE cADV_PYMT;
+    COMMIT;
+EXCEPTION
+    WHEN OTHERS THEN
+        BEGIN
+            vERROR_CODE := TO_CHAR(SQLCODE);
+            vSQLERR := SUBSTR(SQLERRM,1,200);
+            vERROR_MESSAGE := 'SQLERR:: ' || vSQLERR || ';DEBUG==' || vDEBUG || ';PYMT_NO==' || vPYMT_NO;
+            BEGIN
+                UPDATE SAPS_PROCESS
+                SET LAST_END_DATE = CURRENT_TIMESTAMP,
+                    LAST_RUN_STAT = 'F'
+                WHERE PROCESS_NAME = vPROCESS_NAME;
+                PROC_GEN_ACC_LOG(vPYMT_NO,vPROCESS_NAME,vERROR_MESSAGE,'E',vERROR_CODE);
+            END;
+        END;
+        IF (cPYMT_MATCH%ISOPEN) THEN
+            CLOSE cPYMT_MATCH;
+        END IF;
+        IF (cADV_PYMT%ISOPEN) THEN
+            CLOSE cADV_PYMT;
+        END IF;
+        COMMIT;
+END;
