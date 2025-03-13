@@ -3,16 +3,19 @@ package com.mongotest.procedure.service;
 import com.mongotest.procedure.entity.AcrcPymtMatch;
 import com.mongotest.procedure.entity.AcrcPymtUpload;
 import com.mongotest.procedure.entity.SapsLog;
+import com.mongotest.procedure.entity.SapsProcess;
 import com.mongotest.procedure.entity.ViewAcrcMatchDoc;
 import com.mongotest.procedure.repository.AcrcPymtMatchRepository;
 import com.mongotest.procedure.repository.AcrcPymtUploadRepository;
 import com.mongotest.procedure.repository.SapsLogRepository;
+import com.mongotest.procedure.repository.SapsProcessRepository;
 import com.mongotest.procedure.repository.ViewAcrcMatchDocRepository;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -30,6 +33,9 @@ public class ProcPreAutoRcptService {
 
     @Autowired
     private SapsLogRepository sapsLogRepository;
+
+    @Autowired
+    private SapsProcessRepository sapsProcessRepository;
 
     private String vPYMT_NO;
     private String vMATCH_DOC;
@@ -99,14 +105,16 @@ public class ProcPreAutoRcptService {
 
                             acrcPymtMatchRepository.updateMatchDetails(vPYMT_NO, vPOL_NO, dDET_MATCH_ADV_AMT, dDET_MATCH_ADV_AMT.negate(), vMATCH_TYPE , vPRODUCT_TYPE);
                             acrcPymtUploadRepository.updateMatchDetails(vPYMT_NO, dDET_MATCH_ADV_AMT, dDET_MATCH_ADV_AMT.negate());
-
+                            updateProcessStatus(vPROCESS_NAME, 'S');
                         }
                     } catch (Exception e) {
                         logError("Error in matching documents", e);
+                        updateProcessStatus(vPROCESS_NAME, 'F');
                     }
                 }
             } catch (Exception e) {
                 logError("General Error in procedure", e);
+                updateProcessStatus(vPROCESS_NAME, 'F');
                 continue;
             }
         }
@@ -137,5 +145,15 @@ public class ProcPreAutoRcptService {
         System.out.println("ERROR_MESSAGE: " + errorMessage);
         System.out.println("LOG_TYPE: " + logType);
         System.out.println("ERROR_CODE: " + errorCode);
+    }
+
+    private void updateProcessStatus(String processName, Character status) {
+        Optional<SapsProcess> sapsProcessOpt = sapsProcessRepository.findById(processName);
+        if (sapsProcessOpt.isPresent()) {
+            SapsProcess sapsProcess = sapsProcessOpt.get();
+            sapsProcess.setLastEndDate(LocalDateTime.now());
+            sapsProcess.setLastRunStat(status);
+            sapsProcessRepository.save(sapsProcess);
+        }
     }
 }
