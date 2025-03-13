@@ -10,7 +10,7 @@ import lombok.Setter;
 @Getter
 @Setter
 @Document(collection = "VIEW_ACRC_MATCHDOC")
-public class ViewAcrcMatchdoc {
+public class ViewAcrcMatchDoc {
 
     @Id
     private String id;

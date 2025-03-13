@@ -31,4 +31,6 @@ public class SapsLog {
 
     @Field("LOG_CODE")
     private String logCode;
+
+    public SapsLog(String vPROCESSName, String vFAILEDRemarks) {}
 }
